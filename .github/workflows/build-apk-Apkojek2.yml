@@ -1,0 +1,90 @@
+name: Build Apkojek2 Signed APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ambil repository
+        uses: actions/checkout@v4
+
+      - name: Pastikan signing secrets tersedia
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ] || [ -z "$KEY_PASS" ]; then
+            echo "ERROR: Signing secrets belum lengkap. Tambahkan 4 GitHub Actions Secrets terlebih dahulu."
+            exit 1
+          fi
+
+      - name: Cari dan ekstrak Apkojek2.zip
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -type f \( -iname 'Apkojek2.zip' -o -iname 'Apkojek2*.zip' \) | head -n 1)
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: Apkojek2.zip tidak ditemukan di halaman utama repository."
+            exit 1
+          fi
+          echo "Menggunakan: $ZIP_FILE"
+          rm -rf extracted
+          mkdir extracted
+          unzip -q "$ZIP_FILE" -d extracted
+          PROJECT_DIR=$(find extracted -name settings.gradle -type f -printf '%h\n' | head -n 1)
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: settings.gradle tidak ditemukan setelah ZIP diekstrak."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 35
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Siapkan keystore rahasia
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          echo "$KS_B64" | base64 --decode > "$RUNNER_TEMP/apkojek2.keystore"
+          chmod 600 "$RUNNER_TEMP/apkojek2.keystore"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/apkojek2.keystore" >> "$GITHUB_ENV"
+
+      - name: Build APK release signed
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          cd "$PROJECT_DIR"
+          gradle assembleRelease --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/Apkojek2.apk"
+
+      - name: Verifikasi signature APK
+        run: |
+          apksigner verify --verbose --print-certs Apkojek2.apk
+          sha256sum Apkojek2.apk | tee Apkojek2.sha256.txt
+
+      - name: Simpan APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apkojek2-SIGNED-APK
+          path: |
+            Apkojek2.apk
+            Apkojek2.sha256.txt
+          if-no-files-found: error
